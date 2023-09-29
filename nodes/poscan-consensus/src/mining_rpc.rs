@@ -5,6 +5,7 @@ use jsonrpsee::{
 	types::error::{CallError, ErrorCode, ErrorObject},
 };
 
+use log::info;
 use sp_runtime::{generic::BlockId, traits::Block as BlockT};
 use sp_api::ProvideRuntimeApi;
 use sp_runtime::generic::DigestItem;
@@ -15,7 +16,7 @@ use poscan_algo::decompress_obj;
 extern crate alloc;
 
 use alloc::string::String;
-use crate::service::{MiningProposal, DEQUE};
+use crate::service::{MiningProposal, DEQUE, META};
 use sp_consensus_poscan::MAX_MINING_OBJ_LEN;
 
 const MAX_QUEUE_LEN: usize = 20;
@@ -34,11 +35,18 @@ const RES_OBJ_MAX_LEN: u64 = 2;
 
 #[rpc(client, server)]
 pub trait PoscanMiningRpcApi<BlockHash> {
+	// 👇
 	#[method(name = "poscan_pushMiningObject")]
-	fn push(&self, obj_id: u64, obj: String) -> RpcResult<u64>;
+	fn push(&self, obj: String, hash: String) -> RpcResult<u64>;
+	// 👆
 
 	#[method(name = "poscan_getMiningObject")]
 	fn get_obj(&self, at: BlockHash) -> RpcResult<String>;
+
+	// 👇
+	#[method(name = "poscan_getMeta")]
+	fn get_meta(&self) -> RpcResult<String>;
+	// 👆
 }
 
 /// A struct that implements the `SillyRpc`
@@ -63,18 +71,29 @@ impl<C, Block> PoscanMiningRpcApiServer<<Block as BlockT>::Hash> for MiningRpc<C
 		C: ProvideRuntimeApi<Block>,
 		C: ProvideRuntimeApi<Block> + Send + Sync + HeaderBackend<Block>,
 {
-	fn push(&self, _obj_id: u64, obj: String) -> RpcResult<u64> {
-		let mut lock = DEQUE.lock();
-		if lock.len() >= MAX_QUEUE_LEN {
-			return Ok(RES_QUEUE_FULL);
-		}
+	// 👇
+	fn push(&self, obj: String, hash: String) -> RpcResult<u64> {
+		// let mut lock = DEQUE.lock();
+		// if lock.len() >= MAX_QUEUE_LEN {
+		// 	return Ok(RES_QUEUE_FULL);
+		// }
 		if obj.len() > MAX_MINING_OBJ_LEN {
 			return Ok(RES_OBJ_MAX_LEN);
 		}
-		(*lock).push_back(MiningProposal { id: 1, pre_obj: obj.as_bytes().to_vec() });
+
+		info!("📨 Push received");
+
+		let lock = DEQUE.clone();
+		let mut lock = lock.lock();
+		(*lock).push_back(MiningProposal { 
+			id: 1, 
+			pre_obj: obj.as_bytes().to_vec(), 
+			hash
+		});
 
 		Ok(RES_OK)
 	}
+	// 👆
 
 	fn get_obj(&self, at: <Block as BlockT>::Hash) -> RpcResult<String> {
 		let block_id = BlockId::Hash(at.into());
@@ -129,4 +148,12 @@ impl<C, Block> PoscanMiningRpcApiServer<<Block as BlockT>::Hash> for MiningRpc<C
 			))))
 		}
 	}
+
+	// 👇
+	fn get_meta(&self) -> RpcResult<String> {
+		let lock = META.lock();
+		let date1 = &(*lock).data1;
+		Ok(format!("{}", date1))
+	}
+	// 👆
 }

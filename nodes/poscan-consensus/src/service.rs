@@ -8,7 +8,7 @@ use sc_finality_grandpa::{GrandpaBlockImport, grandpa_peers_set_config};
 use sc_service::{error::Error as ServiceError, Configuration, PartialComponents, TaskManager};
 use sc_telemetry::{Telemetry, TelemetryWorker};
 use poscan_grid2d::*;
-use sp_core::{Encode, Decode, H256};
+use sp_core::{Encode, Decode, H256, U256};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -28,17 +28,29 @@ use async_trait::async_trait;
 use sc_rpc::SubscriptionTaskExecutor;
 use sc_finality_grandpa::{FinalityProofProvider as GrandpaFinalityProofProvider};
 
+// 👇
 pub struct MiningProposal {
 	pub id: i32,
 	pub pre_obj: Vec<u8>,
+	pub hash: String,
+}
+
+#[derive(Encode, Decode)]
+pub struct MetaCompute {
+	pub difficulty: U256,
+	pub pre_hash: H256,
+	pub best_hash: H256,
+}
+
+pub struct Meta {
+	pub data1: String,
 }
 
 lazy_static! {
-    pub static ref DEQUE: Mutex<VecDeque<MiningProposal>> = {
-        let m = VecDeque::new();
-        Mutex::new(m)
-    };
+    pub static ref DEQUE: Arc<Mutex<VecDeque<MiningProposal>>> = Arc::new(Mutex::new(VecDeque::new()));
+	pub static ref META: Arc<Mutex<Meta>> = Arc::new(Mutex::new(Meta{data1:String::new()}));
 }
+// 
 
 pub struct ExecutorDispatch;
 
@@ -402,32 +414,31 @@ pub fn new_full(
 		 	"Unable to mine: key not found in keystore".to_string(),
 		))?;
 
-		info!(">>> Spawn mining loop");
+		// 👇
+		thread::spawn(move || loop {
 
-		// Start Mining
-		let poscan_data: Option<PoscanData> = None;
-		let poscan_hash: H256 = H256::random();
+			let metadata = worker.metadata();
 
-		info!(">>> Spawn mining loop(s)");
+			if let Some(metadata) = metadata {
+				let compute = MetaCompute {
+					difficulty: metadata.difficulty,
+					pre_hash  : metadata.pre_hash,
+					best_hash : metadata.best_hash,
+				};
+				{META.lock().data1 = hex::encode(compute.encode());}
 
-		for _i in 0..threads {
-			let worker = worker.clone();
-			let author = author.clone();
-			let mut poscan_data = poscan_data.clone();
-			let mut poscan_hash = poscan_hash.clone();
-			let mining_pool = mining_pool.as_ref().map(|a| a.clone());
-			let pair = pair.clone();
+				loop {
+					// let mut lock = DEQUE.lock();
+					// let maybe_mining_prop = (*lock).pop_back();
+					// drop(lock);
 
-			thread::spawn(move || loop {
-				let metadata = worker.metadata();
-				if let Some(metadata) = metadata {
 					let maybe_mining_prop =
 						mining_pool.clone()
 							.map(|mining_pool| {
 								let mut mining_pool = mining_pool.lock();
 								mining_pool.update_metadata(metadata.pre_hash, metadata.best_hash, metadata.difficulty);
 								mining_pool.take()
-									.map(|sp| MiningProposal { id: 0, pre_obj: sp.pre_obj })
+									.map(|sp| MiningProposal { id: 0, pre_obj: sp.pre_obj, hash:hex::encode(sp.hash) })
 							})
 							.flatten()
 							.or_else(|| {
@@ -436,48 +447,60 @@ pub fn new_full(
 							});
 
 					if let Some(mp) = maybe_mining_prop {
+
+						info!(">>> verify push");
+	
+						// 👇
+						info!(">>> mp: hash  : {}", mp.hash);
+		
+						info!(">>> metadata: difficulty : {}", hex::encode(metadata.difficulty.encode()));
+						info!(">>> metadata: pre_hash   : {}", hex::encode(metadata.pre_hash.encode()));
+						info!(">>> metadata: best_hash  : {}", hex::encode(metadata.best_hash.encode()));
+		
 						let hashes = get_obj_hashes(&POSCAN_ALGO_GRID2D_V3_1, &mp.pre_obj, &metadata.pre_hash);
+		
 						if hashes.len() > 0 {
 							let obj_hash = hashes[0];
+		
 							let dh = DoubleHash { pre_hash: metadata.pre_hash, obj_hash };
-							poscan_hash = dh.calc_hash();
-							poscan_data = Some(PoscanData {
-								alg_id: POSCAN_ALGO_GRID2D_V3_1,
-								hashes,
-								obj:
-								mp.pre_obj
-							});
-						}
-					}
-					else {
-					  	thread::sleep(Duration::new(1, 0));
-					}
+							let	poscan_hash = dh.calc_hash();
+		
+							let compute = Compute {
+								difficulty: metadata.difficulty,
+								pre_hash  : metadata.pre_hash,
+								poscan_hash,
+							};
 
-					if let Some(ref psdata) = poscan_data {
-						let compute = Compute {
-							difficulty: metadata.difficulty,
-							pre_hash: metadata.pre_hash,
-							poscan_hash,
-						};
+							let signature = compute.sign(&pair);
+							let seal = compute.seal(signature.clone());
+						
+							info!(">>> obj_hash   : {}", hex::encode(obj_hash.encode()));
+							info!(">>> poscan_hash: {}", hex::encode(poscan_hash.encode()));
+							info!(">>> seal: work : {}", hex::encode(seal.work.encode()));
+						
+							if hash_meets_difficulty(&seal.work, seal.difficulty) {
+								let psdata = PoscanData { alg_id: POSCAN_ALGO_GRID2D_V3_1, hashes, obj: mp.pre_obj };
+								info!(">>> hash_meets_difficulty: submit it: {}, {}, {}",  &seal.work, &seal.poscan_hash, &seal.difficulty);
+								info!(">>> signature: {}", hex::encode(signature.to_vec()));
+								info!(">>> pre_hsash: {}", hex::encode(compute.pre_hash));
+								info!(">>> check verify: {}", compute.verify(&signature.clone(), &author));
+								let _ = futures::executor::block_on(worker.submit(seal.encode(), &psdata));
+							}
+						}
 
-						let signature = compute.sign(&pair);
-						let seal = compute.seal(signature.clone());
-						if hash_meets_difficulty(&seal.work, seal.difficulty) {
-							info!(">>> hash_meets_difficulty: submit it: {}, {}, {}",  &seal.work, &seal.poscan_hash, &seal.difficulty);
-							info!(">>> check verify: {}", compute.verify(&signature.clone(), &author));
-							info!(">>> pre_hash: {}", &metadata.pre_hash);
-							let _ = futures::executor::block_on(worker.submit(seal.encode(), &psdata));
-						}
-						else {
-							// info!(">>> does not meet difficulty");
-						}
-						poscan_data = None;
+						// 👆
+					} else {
+						break;
 					}
-				} else {
-					thread::sleep(Duration::from_millis(10));
 				}
-			});
-		}
+
+			} else {
+				META.lock().data1 = "".to_string();
+				DEQUE.lock().clear();
+			}
+
+			thread::sleep(Duration::new(0, 100_000_000));
+		});
 	}
 
 	let grandpa_config = sc_finality_grandpa::Config {
