@@ -70,6 +70,7 @@ pub trait PoscanPoolRpcApi<BlockHash> {
 	fn get_work_params(
 		&self,
 		pool_id: AccountId,
+		member_id: AccountId,
 	) -> RpcResult<ParamsResp>;
 
 	#[method(name = "poscan_pushMiningObjectToPool")]
@@ -284,10 +285,11 @@ impl<C, Block, B> PoscanPoolRpcApiServer<<Block as BlockT>::Hash> for MiningPool
 	fn get_work_params(
 		&self,
 		pool_id: AccountId,
+		member_id: AccountId,
 	) -> RpcResult<ParamsResp> {
 		log::debug!(target: LOG_TARGET, "MiningPool::get_work_params called");
-		let lock = self.pool.lock();
-		if let Some(mp) = (*lock).curr_meta.clone() {
+		let pool_lock = self.pool.lock();
+		if let Some(mp) = (*pool_lock).curr_meta.clone() {
 			let pre_hash = mp.pre_hash;
 			let parent_hash = mp.parent_hash;
 			let win_dfclty = mp.difficulty;
@@ -296,10 +298,10 @@ impl<C, Block, B> PoscanPoolRpcApiServer<<Block as BlockT>::Hash> for MiningPool
 			log::debug!(target: LOG_TARGET, "win_dfclty: {:?}", &win_dfclty);
 			let pow_dfclty: U256 = self.client.runtime_api().difficulty(&block, &pool_id).unwrap().into();
 			log::debug!(target: LOG_TARGET, "pow_dfclty: {:?}", &pow_dfclty);
-			let key = (*lock).public();
+			let key = (*pool_lock).public();
 
 			log::debug!(target: LOG_TARGET, "key: {}", &hex::encode(key.encode()));
-			Ok((pre_hash, parent_hash, win_dfclty, pow_dfclty, (*lock).public()))
+			Ok((pre_hash, parent_hash, win_dfclty, pow_dfclty, (*pool_lock).public()))
 		}
 		else {
 			Err(JsonRpseeError::Custom("No data".to_string()))

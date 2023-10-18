@@ -4984,6 +4984,7 @@ dependencies = [
  "lazy_static",
  "log",
  "pallet-contracts-rpc",
+ "pallet-difficulty",
  "pallet-poscan",
  "pallet-transaction-payment-rpc",
  "parity-scale-codec",

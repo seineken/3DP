@@ -1609,6 +1609,7 @@ impl_runtime_apis! {
 		fn difficulty() -> sp_consensus_poscan::Difficulty {
 			difficulty::Module::<Runtime>::difficulty()
 		}
+		
 	}
 
 	impl sp_consensus_poscan::MiningPoolApi<Block, AccountId> for Runtime {
